@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
-import { ArrowUp, Loader2, Paperclip, Sparkles, X } from "lucide-react";
+import { ArrowUp, Loader2, Mic, Paperclip, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
 import { errMsg, useApi } from "@/lib/api";
+import { recordAudio } from "@/lib/voice";
 import { useAdam } from "@/lib/adamContext";
 
 export default function Composer({ onSend, busy }) {
@@ -10,6 +11,8 @@ export default function Composer({ onSend, busy }) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [rec, setRec] = useState(null);
+  const [transcribing, setTranscribing] = useState(false);
   const inputRef = useRef(null);
 
   const upload = async (list) => {
@@ -29,6 +32,24 @@ export default function Composer({ onSend, busy }) {
     if (!text.trim() || busy || uploading) return;
     onSend(text.trim(), files);
     setText(""); setFiles([]);
+  };
+
+  const toggleMic = async () => {
+    if (rec) {
+      const r = rec;
+      setRec(null);
+      setTranscribing(true);
+      try {
+        const blob = await r.stop();
+        const fd = new FormData();
+        fd.append("file", blob, r.mime.includes("webm") ? "voz.webm" : "voz.mp4");
+        const { data } = await api.post("/voice/transcribe", fd);
+        if (data.text) { onSend(data.text, files, true); setFiles([]); } else toast.info("Não ouvi nada. Tente de novo.");
+      } catch (e) { toast.error(errMsg(e)); }
+      setTranscribing(false);
+      return;
+    }
+    try { setRec(await recordAudio()); } catch { toast.error("Permita o acesso ao microfone para falar com o Adam."); }
   };
 
   return (
@@ -60,7 +81,11 @@ export default function Composer({ onSend, busy }) {
             data-testid="image-generate-trigger" title="Gerar imagem" className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5 disabled:opacity-30 transition-colors">
             <Sparkles className="w-4 h-4" />
           </button>
-          <span className="ml-auto hidden sm:inline text-[10px] font-mono text-zinc-600 mr-2">Enter envia · Shift+Enter quebra linha</span>
+          <span className="ml-auto hidden sm:inline text-[10px] font-mono text-zinc-600 mr-2">{rec ? "Gravando… clique para enviar" : "Enter envia · Shift+Enter quebra linha"}</span>
+          <button onClick={toggleMic} disabled={busy || transcribing} data-testid="voice-record-button" title={rec ? "Parar e enviar" : "Falar com o Adam"}
+            className={`p-2 rounded-xl transition-colors disabled:opacity-30 ${rec ? "bg-rose-500/20 text-rose-300 animate-pulse" : "text-zinc-400 hover:text-white hover:bg-white/5"}`}>
+            {transcribing ? <Loader2 className="w-4 h-4 animate-spin" /> : rec ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </button>
           <button onClick={submit} disabled={!text.trim() || busy || uploading} data-testid="chat-send-button"
             className="p-2 rounded-xl bg-gradient-to-r from-[#F4A261] to-[#E07A5F] text-white hover:opacity-90 disabled:opacity-30 transition-opacity">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}

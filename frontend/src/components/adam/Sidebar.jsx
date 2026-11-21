@@ -1,6 +1,6 @@
 import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
 import { UserButton, useUser } from "@clerk/react";
-import { Activity, Brain, Cpu, FolderOpen, KeyRound, MessageSquare, Plus, Trash2 } from "lucide-react";
+import { Activity, BookOpen, Brain, Chrome, Code, Cpu, FolderOpen, KeyRound, MessageSquare, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAdam } from "@/lib/adamContext";
 import { useApi } from "@/lib/api";
@@ -8,8 +8,11 @@ import { useApi } from "@/lib/api";
 const NAV = [
   { to: "/", label: "Chat", icon: MessageSquare, id: "chat" },
   { to: "/memoria", label: "Memória", icon: Brain, id: "memory" },
+  { to: "/conhecimento", label: "Base de Conhecimento", icon: BookOpen, id: "knowledge" },
   { to: "/arquivos", label: "Arquivos", icon: FolderOpen, id: "files" },
   { to: "/laboratorio", label: "Laboratório Neural", icon: Activity, id: "lab" },
+  { to: "/extensao", label: "Extensão Chrome", icon: Chrome, id: "extension" },
+  { to: "/widget", label: "Widget para Sites", icon: Code, id: "widget" },
   { to: "/api", label: "API & Chaves", icon: KeyRound, id: "api" },
   { to: "/configuracoes", label: "Configurações", icon: Cpu, id: "settings" },
 ];

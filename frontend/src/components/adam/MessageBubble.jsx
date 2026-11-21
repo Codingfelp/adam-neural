@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, Copy, Download, ExternalLink, Globe, Paperclip, Search } from "lucide-react";
-import { ENGINES } from "@/lib/api";
+import { toast } from "sonner";
+import { BookOpen, Check, Copy, Download, ExternalLink, Globe, Loader2, Paperclip, Search, Square, Volume2 } from "lucide-react";
+import { ENGINES, useApi } from "@/lib/api";
+import { onSpeakingChange, speak, stopSpeaking } from "@/lib/voice";
 import { FileCard, GeneratedImage, useBlobUrl } from "@/components/adam/FileCard";
 
 const EXT = { python: "py", javascript: "js", js: "js", typescript: "ts", html: "html", css: "css", json: "json", bash: "sh", sql: "sql", jsx: "jsx", java: "java" };
@@ -51,7 +53,29 @@ const LINK_KIND = {
   search: { icon: Search, label: "Pesquisou" },
   read: { icon: Globe, label: "Leu" },
   open: { icon: ExternalLink, label: "Abriu no navegador" },
+  kb: { icon: BookOpen, label: "Consultou" },
 };
+
+function SpeakButton({ m }) {
+  const api = useApi();
+  const [speaking, setSpeaking] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => onSpeakingChange(setSpeaking), []);
+  const active = speaking === m.id;
+  const toggle = async () => {
+    if (active) return stopSpeaking();
+    setLoading(true);
+    try { await speak(api, m.content, m.id); } catch { toast.error("Não consegui gerar a voz."); }
+    setLoading(false);
+  };
+  return (
+    <button onClick={toggle} data-testid="message-speak-button" title={active ? "Parar" : "Ouvir resposta"}
+      className="mt-2 inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-[#F4A261] transition-colors">
+      {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : active ? <Square className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+      {active ? "Parar" : "Ouvir"}
+    </button>
+  );
+}
 
 function LinkList({ links }) {
   return (
@@ -59,6 +83,11 @@ function LinkList({ links }) {
       {links.map((l, i) => {
         const k = LINK_KIND[l.kind] || LINK_KIND.read;
         const Icon = k.icon;
+        if (l.kind === "kb") return (
+          <span key={i} data-testid={`message-link-kb-${i}`} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#F4A261]/25 bg-[#F4A261]/5 text-xs text-amber-200">
+            <Icon className="w-3.5 h-3.5" /><span className="text-zinc-500">{k.label}</span><span className="truncate max-w-[12rem]">{l.title}</span>
+          </span>
+        );
         let host = l.url;
         try { host = new URL(l.url).hostname.replace("www.", ""); } catch {}
         return (
@@ -100,6 +129,7 @@ export default function MessageBubble({ m, streaming }) {
         </div>
         {m.links?.length > 0 && <LinkList links={m.links} />}
         {m.files?.map((f) => (f.kind === "image" ? <GeneratedImage key={f.id} file={f} /> : <FileCard key={f.id} file={f} />))}
+        {!streaming && m.content && <SpeakButton m={m} />}
       </div>
     </div>
   );

@@ -3,15 +3,18 @@ import { Save } from "lucide-react";
 import { toast } from "sonner";
 import { errMsg, useApi } from "@/lib/api";
 import PageHeader from "@/components/adam/PageHeader";
+import { useAdam } from "@/lib/adamContext";
 
 const field = "w-full px-4 py-3 rounded-xl bg-[#181A26] border border-white/10 outline-none focus:border-[#F4A261]/50 text-sm";
+const VOICES = [["onyx", "grave e firme"], ["echo", "suave e calma"], ["ash", "clara"], ["sage", "sábia"], ["alloy", "neutra"], ["coral", "calorosa"], ["nova", "enérgica"], ["shimmer", "alegre"], ["fable", "expressiva"]];
 
 export default function SettingsPage() {
   const api = useApi();
+  const { setSettings } = useAdam();
   const [s, setS] = useState(null);
   useEffect(() => { api.get("/settings").then((r) => setS(r.data)); }, [api]);
   const save = async () => {
-    try { await api.put("/settings", s); toast.success("Configurações salvas"); } catch (e) { toast.error(errMsg(e)); }
+    try { await api.put("/settings", s); setSettings(s); toast.success("Configurações salvas"); } catch (e) { toast.error(errMsg(e)); }
   };
   if (!s) return null;
   const set = (k) => (e) => setS({ ...s, [k]: e.target.value });
@@ -34,6 +37,28 @@ export default function SettingsPage() {
           <h2 className="font-display text-lg">Estilo de resposta</h2>
           <p className="text-sm text-zinc-500 mt-1 mb-4">Instrução aplicada em todas as conversas.</p>
           <textarea data-testid="settings-style-input" rows={3} className={field} value={s.response_style} onChange={set("response_style")} placeholder="Ex: Seja direto, use exemplos práticos e emojis com moderação." />
+        </section>
+
+        <section className="p-6 rounded-2xl bg-[#12141D] border border-white/[0.07] mb-5">
+          <h2 className="font-display text-lg">Voz do Adam</h2>
+          <p className="text-sm text-zinc-500 mt-1 mb-4">Fale pelo microfone no chat. Quando você fala, o Adam responde falando.</p>
+          <label className="text-xs text-zinc-400">Voz</label>
+          <select data-testid="settings-voice-select" className={`${field} mt-1.5 mb-4`} value={s.voice || "onyx"} onChange={set("voice")}>
+            {VOICES.map(([v, d]) => <option key={v} value={v}>{v} — {d}</option>)}
+          </select>
+          <label className="flex items-center gap-3 text-sm text-zinc-300">
+            <input type="checkbox" checked={!!s.auto_speak} onChange={(e) => setS({ ...s, auto_speak: e.target.checked })} data-testid="settings-auto-speak" />
+            Ler todas as respostas em voz alta automaticamente
+          </label>
+        </section>
+
+        <section className="p-6 rounded-2xl bg-[#12141D] border border-white/[0.07] mb-5">
+          <h2 className="font-display text-lg">Aprendizado contínuo</h2>
+          <label className="flex items-start gap-3 text-sm text-zinc-300 mt-3">
+            <input type="checkbox" className="mt-1" checked={s.neural_learning !== false} onChange={(e) => setS({ ...s, neural_learning: e.target.checked })} data-testid="settings-neural-learning" />
+            <span>Permitir que o Adam Neural aprenda em segundo plano com minhas mensagens, memórias, documentos e respostas do Servidor Local.
+              <span className="block text-xs text-zinc-500 mt-1">O Adam Neural é um modelo compartilhado da plataforma. Respostas do Adam Pro não são usadas no treino.</span></span>
+          </label>
         </section>
 
         <button onClick={save} data-testid="settings-save-button" className="flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-[#F4A261] to-[#E07A5F] text-sm font-medium hover:opacity-90">

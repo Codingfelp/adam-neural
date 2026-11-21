@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Code2, Download, FileSpreadsheet, FileText, Image as ImageIcon, Table } from "lucide-react";
+import { Code2, Download, FileSpreadsheet, FileText, Image as ImageIcon, Maximize2, Monitor, Smartphone, Table } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useApi } from "@/lib/api";
 
 const TYPES = {
@@ -56,7 +57,7 @@ export function FileCard({ file }) {
   const t = TYPES[typeOf(file)];
   const Icon = t.icon;
   if (typeOf(file) === "image") return <GeneratedImage file={file} />;
-  return (
+  const card = (
     <div className="flex items-center gap-3 p-3.5 rounded-xl bg-white/[0.03] border border-white/10 hover:border-white/20 transition-colors my-2 max-w-md rise" data-testid={`generated-file-card-${file.id}`}>
       <div className={`p-2.5 rounded-lg border ${t.cls}`}><Icon className="w-5 h-5" /></div>
       <div className="min-w-0 flex-1">
@@ -67,6 +68,49 @@ export function FileCard({ file }) {
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
         <Download className="w-3.5 h-3.5" /> Baixar
       </button>
+    </div>
+  );
+  if (!/\.html?$/i.test(file.name)) return card;
+  return (
+    <div className="max-w-3xl">
+      {card}
+      <SitePreview file={file} />
+    </div>
+  );
+}
+
+function SitePreview({ file }) {
+  const api = useApi();
+  const [html, setHtml] = useState(null);
+  const [open, setOpen] = useState(true);
+  const [mobile, setMobile] = useState(false);
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    api.get(`/files/${file.id}`, { responseType: "text" }).then((r) => setHtml(r.data)).catch(() => {});
+  }, [file.id, api]);
+  if (!html) return null;
+  const frame = (h) => (
+    <iframe title={file.name} srcDoc={html} sandbox="allow-scripts allow-forms allow-modals allow-popups" data-testid="site-preview-iframe"
+      className="bg-white rounded-lg mx-auto block transition-[width] duration-300" style={{ width: mobile ? 390 : "100%", height: h, border: 0 }} />
+  );
+  return (
+    <div className="rounded-xl border border-white/10 overflow-hidden mb-2 rise" data-testid={`site-preview-${file.id}`}>
+      <div className="flex items-center gap-2 px-3 py-2 bg-white/[0.04] border-b border-white/5 text-xs">
+        <span className="flex gap-1.5 mr-2"><i className="w-2.5 h-2.5 rounded-full bg-rose-400/70" /><i className="w-2.5 h-2.5 rounded-full bg-amber-400/70" /><i className="w-2.5 h-2.5 rounded-full bg-emerald-400/70" /></span>
+        <span className="font-mono text-zinc-400 truncate flex-1">Prévia ao vivo · {file.name}</span>
+        <button onClick={() => setMobile(!mobile)} data-testid="site-preview-device-toggle" className="p-1 rounded hover:bg-white/10" title="Celular / Desktop">
+          {mobile ? <Monitor className="w-3.5 h-3.5" /> : <Smartphone className="w-3.5 h-3.5" />}
+        </button>
+        <button onClick={() => setFull(true)} data-testid="site-preview-fullscreen" className="p-1 rounded hover:bg-white/10" title="Tela cheia"><Maximize2 className="w-3.5 h-3.5" /></button>
+        <button onClick={() => setOpen(!open)} data-testid="site-preview-toggle" className="px-2 py-0.5 rounded hover:bg-white/10 text-zinc-400">{open ? "Ocultar" : "Mostrar"}</button>
+      </div>
+      {open && <div className="bg-[#0c0d14] p-2">{frame(420)}</div>}
+      <Dialog open={full} onOpenChange={setFull}>
+        <DialogContent className="max-w-[96vw] w-[96vw] h-[92vh] p-3 bg-[#0c0d14] border-white/10 flex flex-col">
+          <DialogTitle className="text-sm font-mono text-zinc-400">{file.name}</DialogTitle>
+          <div className="flex-1 min-h-0">{frame("100%")}</div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { useAdam } from "@/lib/adamContext";
 import EngineSelect from "@/components/adam/EngineSelect";
 import MessageBubble from "@/components/adam/MessageBubble";
 import Composer from "@/components/adam/Composer";
+import { speak } from "@/lib/voice";
 
 const SUGGESTIONS = [
   { icon: Globe, text: "Crie um site de portfólio moderno em um único arquivo HTML" },
@@ -52,7 +53,7 @@ export default function ChatPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const api = useApi();
-  const { engine, refresh } = useAdam();
+  const { engine, refresh, settings } = useAdam();
   const [messages, setMessages] = useState([]);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -70,8 +71,9 @@ export default function ChatPage() {
 
   const patchLast = (fn) => setMessages((p) => { const c = [...p]; c[c.length - 1] = fn(c[c.length - 1]); return c; });
 
-  const send = async (text, files) => {
+  const send = async (text, files, byVoice = false) => {
     setBusy(true);
+    let finalText = "";
     setMessages((p) => [...p, { id: `u-${Date.now()}`, role: "user", content: text, attachments: files },
       { id: "streaming", role: "assistant", content: "", files: [], engine }]);
     try {
@@ -86,7 +88,7 @@ export default function ChatPage() {
         if (ev.type === "meta") {
           setTitle(ev.title);
           if (!id) { skipLoad.current = ev.conversation_id; navigate(`/chat/${ev.conversation_id}`, { replace: true }); refresh(); }
-        } else if (ev.type === "delta") patchLast((m) => ({ ...m, content: m.content + ev.content, tool: null }));
+        } else if (ev.type === "delta") { finalText += ev.content; patchLast((m) => ({ ...m, content: m.content + ev.content, tool: null })); }
         else if (ev.type === "tool") patchLast((m) => ({ ...m, tool: ev.label }));
         else if (ev.type === "file") patchLast((m) => ({ ...m, files: [...m.files, ev.file], tool: null }));
         else if (ev.type === "link") {
@@ -96,6 +98,7 @@ export default function ChatPage() {
         else if (ev.type === "error") toast.error(ev.message);
         else if (ev.type === "done") patchLast((m) => ({ ...m, id: ev.message_id }));
       });
+      if ((byVoice || settings.auto_speak) && finalText.trim()) speak(api, finalText, "last").catch(() => toast.error("Não consegui falar a resposta."));
     } catch (e) {
       toast.error(errMsg(e));
       patchLast((m) => ({ ...m, content: m.content || "⚠️ Não foi possível obter resposta." }));

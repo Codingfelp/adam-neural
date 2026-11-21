@@ -56,6 +56,12 @@ export default function LabPage() {
         <PageHeader eyebrow="Laboratório Neural · PyTorch" title="AdamNano — Transformer próprio, do zero"
           subtitle="Arquitetura decoder-only escrita à mão com atenção causal, tokenizer próprio de caracteres e treino por previsão do próximo token. Pequena de propósito: é a semente da Versão 3 do Adam." />
 
+        <div className="flex flex-wrap items-center gap-3 mb-6 px-4 py-3 rounded-xl border border-purple-500/25 bg-purple-500/5 text-sm" data-testid="lab-autolearn-status">
+          <span className="w-2 h-2 rounded-full bg-purple-400 pulse-node" />
+          <span className="text-purple-200">Aprendizado contínuo ativo</span>
+          <span className="text-zinc-500 text-xs">{s.pending_examples} novos exemplos na fila · treina sozinho a cada 5 min · {s.last_autolearn ? `último aprendizado ${new Date(s.last_autolearn).toLocaleString("pt-BR")}` : "aguardando primeiro ciclo"}</span>
+        </div>
+
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-8">
           <Metric label="Parâmetros" value={`${(s.params / 1e6).toFixed(2)}M`} testid="lab-params" />
           <Metric label="Camadas" value={s.n_layer} />

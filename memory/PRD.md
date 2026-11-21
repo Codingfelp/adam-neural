@@ -15,6 +15,15 @@ Construir "Adam", IA própria estilo ChatGPT/Claude/Manus, criada por Felipe Hud
 - Frontend React: Chat (SSE streaming, seletor de motor, anexos, cartões de arquivos/imagens/links), Memória, Arquivos, Laboratório Neural, API & Chaves, Configurações.
 - Contexto: últimas 16 mensagens + resumo progressivo automático das antigas (não estoura janela de contexto).
 
+## Implementado (2026-11-21) — iteração 3
+- Aprendizado contínuo do AdamNano em segundo plano (loop a cada 5 min) com mensagens do usuário, memórias, docs da base e respostas do Servidor Local. Respostas do Claude NÃO entram (termos da Anthropic). Opção em Configurações.
+- RAG: Base de Conhecimento (/conhecimento) com índice de texto Mongo (português), trechos injetados no prompt e citados ("Consultou").
+- System prompt com método de raciocínio passo a passo.
+- Extensão Chrome MV3 (painel lateral, permissão por ação) + API /api/v1/agent/start|step|stop; zip em /api/extension/download.
+- Widget embutível: /api/widget.js + /api/widget/chat (chaves adam_pub_, domínios permitidos, limite 20 msg/min, sem acesso a memórias).
+- Prévia ao vivo de sites .html no chat (iframe sandbox, modo celular, tela cheia).
+- Voz: microfone → Whisper (whisper-1) → resposta falada (tts-1, voz configurável), botão Ouvir.
+
 ## Implementado (2026-11-21)
 - Chat streaming com 3 motores (pro / neural / local Ollama), histórico, renomear/excluir.
 - Ferramentas do Adam: criar_arquivo, gerar_imagem (Gemini Nano Banana), salvar_memoria, pesquisar_web, abrir_site, abrir_no_navegador (abre aba no navegador do usuário).

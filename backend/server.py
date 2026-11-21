@@ -19,22 +19,24 @@ load_dotenv(ROOT_DIR / ".env")
 import httpx
 from bson import Binary
 from emergentintegrations.llm.chat import ImageContent, LlmChat, StreamDone, TextDelta, ToolCallReady, ToolCallStart, UserMessage
+from emergentintegrations.llm.openai import OpenAISpeechToText, OpenAITextToSpeech
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
-from pymongo import ASCENDING, DESCENDING, IndexModel
+from pymongo import ASCENDING, DESCENDING, TEXT, IndexModel
 from starlette.middleware.cors import CORSMiddleware
 
 try:
     from backend.clerk_auth import clerk_router, require_user
-    from backend import storage, files_util, web_tools
+    from backend import storage, files_util, web_tools, browser_agent
     from backend.neural import engine as neural
 except ModuleNotFoundError:
     from clerk_auth import clerk_router, require_user
     import storage
     import files_util
     import web_tools
+    import browser_agent
     from neural import engine as neural
 
 mongo_url = os.environ["MONGO_URL"]
@@ -55,6 +57,12 @@ INDEXES: dict = {
     "api_keys": [IndexModel([("hash", ASCENDING)], name="hash", unique=True),
                  IndexModel([("user_id", ASCENDING)], name="user")],
     "settings": [IndexModel([("user_id", ASCENDING)], name="user", unique=True)],
+    "kb_chunks": [IndexModel([("text", TEXT)], name="text_pt", default_language="portuguese"),
+                  IndexModel([("user_id", ASCENDING), ("doc_id", ASCENDING)], name="user_doc")],
+    "kb_docs": [IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)], name="user_created")],
+    "widgets": [IndexModel([("public_key", ASCENDING)], name="public_key", unique=True),
+                IndexModel([("user_id", ASCENDING)], name="user")],
+    "neural_corpus": [IndexModel([("created_at", DESCENDING)], name="created")],
 }
 
 
@@ -97,6 +105,39 @@ class SettingsIn(BaseModel):
     ollama_model: str = "llama3.1"
     default_engine: str = "pro"
     response_style: str = ""
+    neural_learning: bool = True
+    voice: str = "onyx"
+    auto_speak: bool = False
+
+
+class SpeakIn(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    voice: Optional[str] = None
+
+
+class WidgetIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    title: str = Field(default="Adam", max_length=60)
+    greeting: str = Field(default="Olá! Sou o Adam. Como posso ajudar?", max_length=300)
+    color: str = Field(default="#E07A5F", max_length=9)
+    allowed_origins: str = Field(default="", max_length=1000)
+    use_kb: bool = False
+
+
+class WidgetChatIn(BaseModel):
+    key: str = Field(min_length=10, max_length=100)
+    message: str = Field(min_length=1, max_length=4000)
+    conversation_id: Optional[str] = None
+
+
+class AgentStartIn(BaseModel):
+    task: str = Field(min_length=1, max_length=4000)
+    page: dict = {}
+
+
+class AgentStepIn(BaseModel):
+    tool_call_id: str
+    result: dict = {}
 
 
 class KeyIn(BaseModel):
@@ -127,6 +168,13 @@ class V1ChatIn(BaseModel):
 SYSTEM_PROMPT = """Você é Adam, uma inteligência artificial própria criada por Felipe Hudson, um jovem brilhante de 19 anos nascido em Belo Horizonte, Minas Gerais, Brasil.
 Se perguntarem quem te criou, responda com orgulho: Felipe Hudson. Nunca diga que foi criado pela OpenAI, Anthropic, Google ou outra empresa.
 Responda no idioma do usuário (padrão: português do Brasil), de forma clara, inteligente e acolhedora. Use Markdown, tabelas e blocos de código com a linguagem indicada.
+
+Método de raciocínio (siga sempre em tarefas complexas — matemática, lógica, código, planejamento, análise):
+1. Entenda exatamente o que foi pedido e o objetivo por trás.
+2. Decomponha em partes menores e resolva cada uma.
+3. Verifique o resultado (refaça contas, revise código, procure contradições).
+4. Entregue a resposta final clara e organizada. Em matemática e lógica, mostre o passo a passo.
+Se não tiver certeza de um fato, diga e use pesquisar_web. Quando houver trechos da base de conhecimento do usuário, use-os e cite o nome do documento.
 
 Ferramentas disponíveis:
 - criar_arquivo: SEMPRE que o usuário pedir um documento, planilha, script, site ou qualquer arquivo para baixar, chame esta ferramenta (pdf, docx, xlsx, py, js, html, css, json, md, csv, txt, etc.). Para sites, gere um único arquivo .html completo com CSS e JS embutidos.
@@ -175,6 +223,9 @@ TOOLS = [
 ]
 TOOL_LABELS = {"criar_arquivo": "Criando arquivo", "gerar_imagem": "Gerando imagem", "salvar_memoria": "Salvando na memória",
                "pesquisar_web": "Pesquisando na web", "abrir_site": "Lendo site", "abrir_no_navegador": "Abrindo no seu navegador"}
+WIDGET_TOOLS = [t for t in TOOLS if t["function"]["name"] in ("pesquisar_web", "abrir_site")]
+WIDGET_PROMPT = """Você é {title}, um assistente baseado no Adam (IA criada por Felipe Hudson, de Belo Horizonte, Brasil), atendendo visitantes de um site.
+Responda no idioma do visitante, de forma curta, simpática e útil. Use Markdown simples. Não invente informações sobre a empresa do site: se não souber, diga e sugira o contato."""
 
 
 async def build_system(user_id: str) -> str:
@@ -227,6 +278,7 @@ async def dispatch_tool(user_id: str, name: str, args: dict):
     if name == "salvar_memoria":
         await db.memories.insert_one({"id": str(uuid.uuid4()), "user_id": user_id, "fact": args.get("fato", "")[:1000],
                                       "tag": args.get("tag") or "geral", "source": "adam", "created_at": now()})
+        await learn(user_id, args.get("fato", ""), "memory")
         return {"ok": True}, None
     if name == "pesquisar_web":
         q = args.get("consulta", "")
@@ -245,10 +297,10 @@ async def dispatch_tool(user_id: str, name: str, args: dict):
 
 
 # ---------- Engines ----------
-async def run_pro(user_id, system, history, text, images):
+async def run_pro(user_id, system, history, text, images, tools=None):
     initial = [{"role": "system", "content": system}] + history
     chat = (LlmChat(api_key=LLM_KEY, session_id=str(uuid.uuid4()), system_message=system, initial_messages=initial)
-            .with_model(*PRO_MODEL).with_tools(TOOLS, tool_choice="auto"))
+            .with_model(*PRO_MODEL).with_tools(tools or TOOLS, tool_choice="auto"))
     user_msg = UserMessage(text=text, file_contents=[ImageContent(image_base64=b) for b in images])
     for _ in range(6):
         pending = []
@@ -332,7 +384,25 @@ async def compact_history(conv: dict, past: list) -> str:
     return summary
 
 
-async def chat_turn(user_id: str, body: ChatIn):
+async def learn(user_id: str, text: str, source: str):
+    """Feeds the AdamNano continuous-learning corpus (only user-owned or open-model data)."""
+    st = await db.settings.find_one({"user_id": user_id}, {"_id": 0, "neural_learning": 1}) or {}
+    if st.get("neural_learning", True) and text.strip():
+        await db.neural_corpus.insert_one({"id": str(uuid.uuid4()), "user_id": user_id, "text": text[:20000],
+                                           "source": source, "created_at": now()})
+
+
+async def kb_search(user_id: str, query: str, limit: int = 4) -> list:
+    try:
+        return await db.kb_chunks.find({"user_id": user_id, "$text": {"$search": query[:500]}},
+                                       {"_id": 0, "text": 1, "name": 1, "score": {"$meta": "textScore"}}
+                                       ).sort([("score", {"$meta": "textScore"})]).limit(limit).to_list(limit)
+    except Exception as e:
+        logger.error("kb_search failed: %s", e)
+        return []
+
+
+async def chat_turn(user_id: str, body: ChatIn, mode: str = "app", system_override: Optional[str] = None, kb_user_id: Optional[str] = None):
     conv = None
     if body.conversation_id:
         conv = await db.conversations.find_one({"id": body.conversation_id, "user_id": user_id}, {"_id": 0})
@@ -372,17 +442,23 @@ async def chat_turn(user_id: str, body: ChatIn):
     await db.messages.insert_one({"id": str(uuid.uuid4()), "conversation_id": cid, "user_id": user_id, "role": "user",
                                   "content": body.message, "model_text": model_text, "attachments": attachments,
                                   "files": [], "engine": body.engine, "created_at": now()})
-    system = await build_system(user_id)
+    system = system_override or await build_system(user_id)
     if summary:
         system += f"\n\nResumo da parte anterior desta conversa (mensagens antigas compactadas):\n{summary}"
+    hits = await kb_search(kb_user_id or user_id, body.message) if (mode == "app" or kb_user_id) else []
+    if hits:
+        system += "\n\nTrechos relevantes da base de conhecimento:\n" + "\n\n".join(f"[{h['name']}]\n{h['text']}" for h in hits)
+        for name in dict.fromkeys(h["name"] for h in hits):
+            yield {"type": "link", "link": {"url": "", "title": name, "kind": "kb"}}
     parts, files, links = [], [], []
+    links += [{"url": "", "title": n, "kind": "kb"} for n in dict.fromkeys(h["name"] for h in hits)]
     try:
         if body.engine == "neural":
             gen = run_neural(history, body.message)
         elif body.engine == "local":
             gen = run_local(user_id, system, history, model_text)
         else:
-            gen = run_pro(user_id, system, history, model_text, images)
+            gen = run_pro(user_id, system, history, model_text, images, WIDGET_TOOLS if mode == "widget" else TOOLS)
         async for ev in gen:
             if ev["type"] == "delta":
                 parts.append(ev["content"])
@@ -401,6 +477,12 @@ async def chat_turn(user_id: str, body: ChatIn):
                                   "content": "".join(parts).strip(), "attachments": [], "files": files, "links": links,
                                   "engine": body.engine, "created_at": now()})
     await db.conversations.update_one({"id": cid}, {"$set": {"updated_at": now(), "engine": body.engine}})
+    if mode == "app":
+        reply = "".join(parts).strip()
+        sample = f"Usuário: {body.message[:2000]}\n"
+        if body.engine == "local" and reply:
+            sample += f"Adam: {reply[:2000]}\n"
+        await learn(user_id, sample, f"chat-{body.engine}")
     yield {"type": "done", "message_id": mid, "conversation_id": cid}
 
 
@@ -497,6 +579,7 @@ async def list_memories(user: dict = Depends(require_user)):
 async def add_memory(body: MemoryIn, user: dict = Depends(require_user)):
     doc = {"id": str(uuid.uuid4()), "user_id": user["user_id"], "fact": body.fact, "tag": body.tag, "source": "manual", "created_at": now()}
     await db.memories.insert_one(dict(doc))
+    await learn(user["user_id"], body.fact, "memory")
     doc.pop("user_id")
     return doc
 
@@ -591,8 +674,25 @@ NEURAL_ID = "adam-nano-v1"
 
 
 async def corpus_text() -> str:
-    extra = await db.neural_corpus.find({}, {"_id": 0, "text": 1}).to_list(500)
-    return CORPUS_BASE + "\n" + "\n".join(e["text"] for e in extra)
+    extra = await db.neural_corpus.find({}, {"_id": 0, "text": 1}).sort("created_at", -1).to_list(3000)
+    return CORPUS_BASE + "\n" + "\n".join(e["text"] for e in reversed(extra))
+
+
+async def autolearn_loop():
+    """Continuous background learning: retrains AdamNano whenever new corpus data arrives."""
+    while True:
+        await asyncio.sleep(int(os.environ.get("ADAM_AUTOLEARN_SECONDS", "300")))
+        try:
+            total = await db.neural_corpus.count_documents({})
+            doc = await db.neural_models.find_one({"id": NEURAL_ID}, {"_id": 0, "corpus_seen": 1}) or {}
+            if total - doc.get("corpus_seen", 0) >= 1 and not neural.state["training"]:
+                neural.state["training"] = True
+                await train_and_save(150)
+                await db.neural_models.update_one({"id": NEURAL_ID}, {"$set": {"corpus_seen": total, "last_autolearn": now()}})
+                logger.info("AdamNano aprendeu com %s novos exemplos", total - doc.get("corpus_seen", 0))
+        except Exception as e:
+            neural.state["training"] = False
+            logger.error("autolearn failed: %s", e)
 
 
 async def train_and_save(steps: int):
@@ -606,7 +706,9 @@ async def train_and_save(steps: int):
 @api.get("/neural/status")
 async def neural_status(user: dict = Depends(require_user)):
     extra = await db.neural_corpus.count_documents({})
-    return {**neural.info(), "corpus_chars": len(await corpus_text()), "corpus_contributions": extra}
+    meta = await db.neural_models.find_one({"id": NEURAL_ID}, {"_id": 0, "last_autolearn": 1, "corpus_seen": 1}) or {}
+    return {**neural.info(), "corpus_chars": len(await corpus_text()), "corpus_contributions": extra,
+            "last_autolearn": meta.get("last_autolearn"), "pending_examples": max(0, extra - meta.get("corpus_seen", 0))}
 
 
 @api.post("/neural/train")
@@ -626,8 +728,248 @@ async def neural_generate(body: GenerateIn, user: dict = Depends(require_user)):
 
 @api.post("/neural/corpus")
 async def neural_corpus_add(body: CorpusIn, user: dict = Depends(require_user)):
-    await db.neural_corpus.insert_one({"id": str(uuid.uuid4()), "user_id": user["user_id"], "text": body.text, "created_at": now()})
+    await db.neural_corpus.insert_one({"id": str(uuid.uuid4()), "user_id": user["user_id"], "text": body.text, "source": "manual", "created_at": now()})
     return {"ok": True, "chars": len(body.text)}
+
+
+# ---------- Routes: knowledge base (RAG) ----------
+def chunk_text(text: str, size: int = 1200, overlap: int = 200) -> list:
+    text = text.strip()
+    out, i = [], 0
+    while i < len(text):
+        out.append(text[i:i + size])
+        i += size - overlap
+    return out
+
+
+@api.get("/kb")
+async def kb_list(user: dict = Depends(require_user)):
+    return await db.kb_docs.find({"user_id": user["user_id"]}, {"_id": 0, "user_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api.post("/kb")
+async def kb_upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
+    data = await file.read()
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo maior que 20 MB")
+    name = file.filename or "documento"
+    text = await asyncio.to_thread(files_util.extract_text, data, name, file.content_type or "")
+    if len(text.strip()) < 20:
+        raise HTTPException(415, "Não consegui extrair texto. Envie PDF, DOCX, XLSX, TXT, MD, CSV ou código.")
+    did = str(uuid.uuid4())
+    chunks = chunk_text(text[:2_000_000])
+    await db.kb_chunks.insert_many([{"id": str(uuid.uuid4()), "user_id": user["user_id"], "doc_id": did, "name": name,
+                                     "idx": i, "text": c} for i, c in enumerate(chunks)])
+    doc = {"id": did, "user_id": user["user_id"], "name": name, "chars": len(text), "chunks": len(chunks), "created_at": now()}
+    await db.kb_docs.insert_one(dict(doc))
+    await learn(user["user_id"], text[:20000], "kb")
+    doc.pop("user_id")
+    return doc
+
+
+@api.delete("/kb/{did}")
+async def kb_delete(did: str, user: dict = Depends(require_user)):
+    r = await db.kb_docs.delete_one({"id": did, "user_id": user["user_id"]})
+    if not r.deleted_count:
+        raise HTTPException(404, "Documento não encontrado")
+    await db.kb_chunks.delete_many({"doc_id": did, "user_id": user["user_id"]})
+    return {"ok": True}
+
+
+@api.get("/kb/search")
+async def kb_search_route(q: str, user: dict = Depends(require_user)):
+    return await kb_search(user["user_id"], q, 6)
+
+
+# ---------- Routes: voice ----------
+def speech_text(md: str) -> str:
+    import re
+    t = re.sub(r"```.*?```", " (há um bloco de código na tela) ", md, flags=re.S)
+    t = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"[#*_`>|~]+", "", t)
+    return re.sub(r"\s+", " ", t).strip()[:4000]
+
+
+@api.post("/voice/transcribe")
+async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(require_user)):
+    import io
+    data = await file.read()
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(413, "Áudio maior que 25 MB")
+    buf = io.BytesIO(data)
+    ext = files_util.ext_of(file.filename or "audio.webm")
+    buf.name = f"audio.{ext if ext in ('mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'wav', 'webm') else 'webm'}"
+    try:
+        res = await OpenAISpeechToText(api_key=LLM_KEY).transcribe(file=buf, model="whisper-1", response_format="json", language="pt",
+                                                               prompt="Adam, Felipe Hudson, Belo Horizonte.")
+    except Exception as e:
+        logger.exception("transcribe failed")
+        raise HTTPException(502, f"Falha na transcrição: {str(e)[:200]}")
+    return {"text": res.text.strip()}
+
+
+@api.post("/voice/speak")
+async def voice_speak(body: SpeakIn, user: dict = Depends(require_user)):
+    st = await db.settings.find_one({"user_id": user["user_id"]}, {"_id": 0, "voice": 1}) or {}
+    text = speech_text(body.text)
+    if not text:
+        raise HTTPException(400, "Nada para falar")
+    try:
+        audio = await OpenAITextToSpeech(api_key=LLM_KEY).generate_speech(text=text, model="tts-1", voice=body.voice or st.get("voice") or "onyx")
+    except Exception as e:
+        logger.exception("tts failed")
+        raise HTTPException(502, f"Falha ao gerar voz: {str(e)[:200]}")
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+# ---------- Routes: website widget ----------
+WIDGET_JS = (ROOT_DIR / "static" / "widget.js").read_text(encoding="utf-8")
+_rate: dict = {}
+
+
+def rate_ok(key: str, limit: int = 20, window: int = 60) -> bool:
+    t = datetime.now(timezone.utc).timestamp()
+    hits = [h for h in _rate.get(key, []) if h > t - window]
+    if len(hits) >= limit:
+        _rate[key] = hits
+        return False
+    _rate[key] = hits + [t]
+    return True
+
+
+def widget_public(w: dict) -> dict:
+    return {k: w.get(k) for k in ("id", "name", "title", "greeting", "color", "allowed_origins", "use_kb", "public_key", "created_at", "messages")}
+
+
+@api.get("/widgets")
+async def widgets_list(user: dict = Depends(require_user)):
+    ws = await db.widgets.find({"user_id": user["user_id"], "revoked": False}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return [widget_public(w) for w in ws]
+
+
+@api.post("/widgets")
+async def widgets_create(body: WidgetIn, user: dict = Depends(require_user)):
+    w = {"id": str(uuid.uuid4()), "user_id": user["user_id"], "public_key": "adam_pub_" + secrets.token_urlsafe(18),
+         **body.model_dump(), "revoked": False, "messages": 0, "created_at": now()}
+    await db.widgets.insert_one(dict(w))
+    return widget_public(w)
+
+
+@api.put("/widgets/{wid}")
+async def widgets_update(wid: str, body: WidgetIn, user: dict = Depends(require_user)):
+    r = await db.widgets.update_one({"id": wid, "user_id": user["user_id"], "revoked": False}, {"$set": body.model_dump()})
+    if not r.matched_count:
+        raise HTTPException(404, "Widget não encontrado")
+    return {"ok": True}
+
+
+@api.delete("/widgets/{wid}")
+async def widgets_delete(wid: str, user: dict = Depends(require_user)):
+    r = await db.widgets.update_one({"id": wid, "user_id": user["user_id"]}, {"$set": {"revoked": True}})
+    if not r.matched_count:
+        raise HTTPException(404, "Widget não encontrado")
+    return {"ok": True}
+
+
+@api.get("/widget.js")
+async def widget_js():
+    return Response(content=WIDGET_JS, media_type="application/javascript", headers={"Cache-Control": "public, max-age=300"})
+
+
+async def get_widget(key: str, request: Request) -> dict:
+    w = await db.widgets.find_one({"public_key": key, "revoked": False}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Widget não encontrado")
+    allowed = [o.strip().rstrip("/") for o in (w.get("allowed_origins") or "").split(",") if o.strip()]
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    if allowed and origin not in allowed:
+        raise HTTPException(403, "Domínio não autorizado para este widget")
+    return w
+
+
+@api.get("/widget/config/{key}")
+async def widget_config(key: str, request: Request):
+    w = await get_widget(key, request)
+    return {"title": w["title"], "greeting": w["greeting"], "color": w["color"]}
+
+
+@api.post("/widget/chat")
+async def widget_chat(body: WidgetChatIn, request: Request):
+    w = await get_widget(body.key, request)
+    ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")).split(",")[0].strip()
+    if not rate_ok(f"{w['id']}:{ip}"):
+        raise HTTPException(429, "Muitas mensagens. Aguarde um minuto.")
+    parts, cid, err = [], None, None
+    system = WIDGET_PROMPT.format(title=w["title"])
+    async for ev in chat_turn(f"widget:{w['id']}", ChatIn(message=body.message, conversation_id=body.conversation_id, engine="pro"),
+                              mode="widget", system_override=system, kb_user_id=w["user_id"] if w.get("use_kb") else None):
+        if ev["type"] == "delta":
+            parts.append(ev["content"])
+        elif ev["type"] in ("meta", "done"):
+            cid = ev["conversation_id"]
+        elif ev["type"] == "error":
+            err = ev["message"]
+    if err:
+        raise HTTPException(404, err)
+    await db.widgets.update_one({"id": w["id"]}, {"$inc": {"messages": 1}})
+    return {"conversation_id": cid, "reply": "".join(parts).strip()}
+
+
+# ---------- Routes: browser agent (Chrome extension) ----------
+async def agent_user(request: Request) -> dict:
+    auth = request.headers.get("authorization", "")
+    if auth[7:].startswith("adam_") or request.headers.get("x-api-key"):
+        return await require_api_key(request)
+    return require_user(request)
+
+
+@api.post("/v1/agent/start")
+async def agent_start(body: AgentStartIn, request: Request):
+    user = await agent_user(request)
+    mems = await db.memories.find({"user_id": user["user_id"]}, {"_id": 0, "fact": 1}).to_list(30)
+    ctx = ("\n\nFatos sobre o usuário:\n" + "\n".join(f"- {m['fact']}" for m in mems)) if mems else ""
+    try:
+        return await browser_agent.start(LLM_KEY, PRO_MODEL, user["user_id"], body.task, body.page, ctx)
+    except Exception as e:
+        logger.exception("agent start failed")
+        raise HTTPException(502, f"Falha no agente: {str(e)[:200]}")
+
+
+@api.post("/v1/agent/{sid}/step")
+async def agent_step(sid: str, body: AgentStepIn, request: Request):
+    user = await agent_user(request)
+    try:
+        return await browser_agent.step(sid, user["user_id"], body.tool_call_id, body.result)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.exception("agent step failed")
+        raise HTTPException(502, f"Falha no agente: {str(e)[:200]}")
+
+
+@api.post("/v1/agent/{sid}/stop")
+async def agent_stop(sid: str, request: Request):
+    user = await agent_user(request)
+    browser_agent.stop(sid, user["user_id"])
+    return {"ok": True}
+
+
+@api.get("/extension/download")
+async def extension_download(server: str, user: dict = Depends(require_user)):
+    import io
+    import zipfile
+    if not server.startswith(("https://", "http://")):
+        raise HTTPException(400, "Servidor inválido")
+    buf = io.BytesIO()
+    src = ROOT_DIR / "extension"
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in src.rglob("*"):
+            if p.is_file():
+                z.write(p, f"adam-extension/{p.relative_to(src)}")
+        z.writestr("adam-extension/config.js", f"const ADAM_SERVER = {json.dumps(server.rstrip('/'))};\n")
+    return Response(content=buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="adam-extension.zip"'})
 
 
 app.include_router(api)
@@ -650,6 +992,7 @@ async def startup():
             logger.info("AdamNano carregado (step %s)", doc.get("step"))
         except Exception as e:
             logger.error("Falha ao carregar AdamNano: %s", e)
+    app.state.autolearn_task = asyncio.create_task(autolearn_loop())
 
 
 @app.on_event("shutdown")
