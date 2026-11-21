@@ -108,6 +108,9 @@ class SettingsIn(BaseModel):
     neural_learning: bool = True
     voice: str = "onyx"
     auto_speak: bool = False
+    voice_provider: str = "elevenlabs"
+    eleven_voice_id: str = ""
+    eleven_voice_name: str = ""
 
 
 class SpeakIn(BaseModel):
@@ -809,18 +812,103 @@ async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(re
     return {"text": res.text.strip()}
 
 
+ELEVEN_API = "https://api.elevenlabs.io"
+
+
+def eleven_key() -> str:
+    return os.environ.get("ELEVENLABS_API_KEY", "")
+
+
+async def eleven_shared_voices(gender: str = "") -> list:
+    params = {"language": "pt", "accent": "brazilian", "page_size": 30, "sort": "usage_character_count_1y"}
+    if gender:
+        params["gender"] = gender
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.get(f"{ELEVEN_API}/v1/shared-voices", params=params, headers={"xi-api-key": eleven_key()})
+    r.raise_for_status()
+    return [{"voice_id": v["voice_id"], "public_owner_id": v["public_owner_id"], "name": v["name"], "gender": v.get("gender"),
+             "age": v.get("age"), "description": (v.get("description") or "")[:140], "preview_url": v.get("preview_url")}
+            for v in r.json().get("voices", [])]
+
+
+async def eleven_ensure_voice(user_id: str, st: dict) -> str:
+    """Returns a usable ElevenLabs voice_id; adds a Brazilian voice from the library to the account if needed."""
+    if st.get("eleven_voice_id"):
+        return st["eleven_voice_id"]
+    voices = await eleven_shared_voices("male")
+    if not voices:
+        raise RuntimeError("Nenhuma voz brasileira encontrada")
+    vid = await eleven_add_shared(voices[0]["public_owner_id"], voices[0]["voice_id"], voices[0]["name"])
+    await db.settings.update_one({"user_id": user_id}, {"$set": {"eleven_voice_id": vid, "eleven_voice_name": voices[0]["name"]}}, upsert=True)
+    return vid
+
+
+async def eleven_add_shared(owner_id: str, voice_id: str, name: str) -> str:
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(f"{ELEVEN_API}/v1/voices/add/{owner_id}/{voice_id}", headers={"xi-api-key": eleven_key()},
+                         json={"new_name": f"Adam BR - {name}"[:100]})
+    if r.status_code == 400 and "already" in r.text.lower():
+        return voice_id
+    r.raise_for_status()
+    return r.json().get("voice_id", voice_id)
+
+
+async def eleven_tts(voice_id: str, text: str) -> bytes:
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post(f"{ELEVEN_API}/v1/text-to-speech/{voice_id}", params={"output_format": "mp3_44100_128"},
+                         headers={"xi-api-key": eleven_key(), "Accept": "audio/mpeg"},
+                         json={"text": text, "model_id": "eleven_multilingual_v2", "language_code": "pt",
+                               "voice_settings": {"stability": 0.45, "similarity_boost": 0.8, "style": 0.2, "use_speaker_boost": True}})
+    if r.status_code >= 400:
+        raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
+    return r.content
+
+
+@api.get("/voice/eleven/voices")
+async def eleven_voices(user: dict = Depends(require_user)):
+    if not eleven_key():
+        return {"enabled": False, "voices": []}
+    try:
+        return {"enabled": True, "voices": await eleven_shared_voices()}
+    except Exception as e:
+        raise HTTPException(502, f"ElevenLabs: {str(e)[:200]}")
+
+
+class ElevenPickIn(BaseModel):
+    voice_id: str
+    public_owner_id: str
+    name: str
+
+
+@api.post("/voice/eleven/select")
+async def eleven_select(body: ElevenPickIn, user: dict = Depends(require_user)):
+    try:
+        vid = await eleven_add_shared(body.public_owner_id, body.voice_id, body.name)
+    except Exception as e:
+        raise HTTPException(502, f"ElevenLabs: {str(e)[:200]}")
+    await db.settings.update_one({"user_id": user["user_id"]}, {"$set": {"eleven_voice_id": vid, "eleven_voice_name": body.name,
+                                                                          "voice_provider": "elevenlabs"}}, upsert=True)
+    return {"voice_id": vid, "name": body.name}
+
+
 @api.post("/voice/speak")
 async def voice_speak(body: SpeakIn, user: dict = Depends(require_user)):
-    st = await db.settings.find_one({"user_id": user["user_id"]}, {"_id": 0, "voice": 1}) or {}
+    st = await db.settings.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
     text = speech_text(body.text)
     if not text:
         raise HTTPException(400, "Nada para falar")
+    if eleven_key() and st.get("voice_provider", "elevenlabs") == "elevenlabs":
+        try:
+            audio = await eleven_tts(await eleven_ensure_voice(user["user_id"], st), text[:2500])
+            return Response(content=audio, media_type="audio/mpeg", headers={"X-Voice-Provider": "elevenlabs"})
+        except Exception as e:
+            logger.error("elevenlabs failed, falling back to OpenAI: %s", e)
     try:
         audio = await OpenAITextToSpeech(api_key=LLM_KEY).generate_speech(text=text, model="tts-1", voice=body.voice or st.get("voice") or "onyx")
     except Exception as e:
         logger.exception("tts failed")
         raise HTTPException(502, f"Falha ao gerar voz: {str(e)[:200]}")
-    return Response(content=audio, media_type="audio/mpeg")
+    return Response(content=audio, media_type="audio/mpeg", headers={"X-Voice-Provider": "openai"})
 
 
 # ---------- Routes: website widget ----------

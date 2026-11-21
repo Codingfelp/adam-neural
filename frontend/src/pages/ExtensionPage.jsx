@@ -1,4 +1,4 @@
-import { Download, MousePointerClick, ShieldCheck, Keyboard, Globe } from "lucide-react";
+import { BellRing, Download, MousePointerClick, ShieldCheck, Keyboard, Globe } from "lucide-react";
 import { toast } from "sonner";
 import { BACKEND_URL, errMsg, useApi } from "@/lib/api";
 import PageHeader from "@/components/adam/PageHeader";
@@ -9,13 +9,16 @@ const STEPS = [
   "Clique em “Carregar sem compactação” e selecione a pasta adam-extension.",
   "Em Adam → API & Chaves, gere uma chave e cole nas configurações (⚙) da extensão.",
   "Clique no ícone do Adam na barra do Chrome: o painel lateral abre. Digite a tarefa e aprove cada ação.",
+  "Tarefas longas: pode fechar o painel ou trocar de aba — o Adam continua em segundo plano, pede permissão por notificação e avisa quando terminar.",
 ];
+
 
 const CAPS = [
   { icon: Globe, t: "Navega", d: "Abre sites, pesquisa no Google, volta páginas." },
   { icon: MousePointerClick, t: "Clica", d: "Botões, links, abas e menus da página." },
   { icon: Keyboard, t: "Digita", d: "Preenche campos e envia formulários." },
   { icon: ShieldCheck, t: "Com permissão", d: "Pede sua aprovação antes de cada ação. Nunca digita senhas ou paga sem você pedir." },
+  { icon: BellRing, t: "Segundo plano", d: "Executa tarefas longas (até 80 passos) enquanto você usa outras abas e te notifica no fim." },
 ];
 
 export default function ExtensionPage() {
@@ -39,7 +42,7 @@ export default function ExtensionPage() {
             <Download className="w-4 h-4" /> Baixar extensão
           </button>
         </PageHeader>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-12">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-12">
           {CAPS.map(({ icon: Icon, t, d }) => (
             <div key={t} className="p-5 rounded-xl bg-white/[0.025] border border-white/[0.07]">
               <Icon className="w-5 h-5 text-[#F4A261] mb-3" />

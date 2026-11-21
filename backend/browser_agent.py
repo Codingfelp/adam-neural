@@ -6,8 +6,8 @@ import uuid
 from emergentintegrations.llm.chat import LlmChat, StreamDone, TextDelta, ToolCallReady, UserMessage
 
 SESSIONS: dict = {}
-MAX_STEPS = 30
-TTL = 1800
+MAX_STEPS = 80
+TTL = 10800
 
 SYSTEM = """Você é Adam, agente de navegador criado por Felipe Hudson (Belo Horizonte, Brasil). Você controla o navegador Chrome do usuário, com a permissão dele, para cumprir tarefas.
 A cada passo você recebe o estado da aba: URL, título, texto visível e a lista de elementos interativos numerados [i].
@@ -17,6 +17,7 @@ Regras:
 - Pense passo a passo: planeje, aja, observe o resultado e ajuste.
 - Nunca digite senhas, dados de cartão, nem finalize compras, pagamentos, envios de formulários sensíveis ou exclusões sem que a tarefa do usuário peça isso explicitamente.
 - Se uma ação for negada pelo usuário, não insista: siga outro caminho ou pergunte.
+- Tarefas longas: trabalhe com calma, um passo por vez, até concluir. O usuário pode estar em outra aba; você controla apenas a aba da tarefa.
 - Quando terminar (ou se não for possível), responda SEM chamar ferramentas, com um resumo claro em português do que fez e do que encontrou."""
 
 BROWSER_TOOLS = [
@@ -33,17 +34,19 @@ BROWSER_TOOLS = [
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "ler_pagina", "description": "Lê novamente o estado atual da página.",
         "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "aguardar", "description": "Espera alguns segundos (carregamentos lentos, processos longos).",
+        "parameters": {"type": "object", "properties": {"segundos": {"type": "integer", "description": "1 a 30"}}, "required": ["segundos"]}}},
 ]
 
 
 def page_to_text(p: dict) -> str:
     els = []
-    for e in (p.get("elements") or [])[:150]:
+    for e in (p.get("elements") or [])[:120]:
         line = f"[{e.get('i')}] <{e.get('tag', '')}{' type=' + e['type'] if e.get('type') else ''}> {str(e.get('label', ''))[:80]}"
         if e.get("href"):
             line += f" -> {str(e['href'])[:90]}"
         els.append(line)
-    return (f"URL: {p.get('url', '')}\nTítulo: {p.get('title', '')}\n\nTexto visível:\n{str(p.get('text') or '')[:5000]}"
+    return (f"URL: {p.get('url', '')}\nTítulo: {p.get('title', '')}\n\nTexto visível:\n{str(p.get('text') or '')[:3500]}"
             f"\n\nElementos interativos:\n{chr(10).join(els) or '(nenhum)'}")
 
 

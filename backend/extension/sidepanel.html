@@ -19,9 +19,7 @@
     <button id="saveCfg" class="primary">Salvar</button>
   </section>
 
-  <main id="log">
-    <div class="msg adam">Olá! Eu sou o Adam. Diga o que devo fazer nesta aba — por exemplo: <i>"pesquise voos BH → SP para sexta e me mostre o mais barato"</i>. Eu peço sua permissão antes de cada ação.</div>
-  </main>
+  <main id="log"></main>
 
   <div id="approval" class="hidden">
     <p id="approvalText"></p>
@@ -35,11 +33,11 @@
   <footer>
     <textarea id="task" rows="2" placeholder="O que o Adam deve fazer?"></textarea>
     <div class="row">
+      <span id="status"></span>
       <button id="stop" class="danger hidden">Parar</button>
       <button id="run" class="primary">Executar</button>
     </div>
   </footer>
-  <script src="config.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

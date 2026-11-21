@@ -26,6 +26,16 @@ export async function speak(api, text, id = "msg") {
   emit();
   audio.onended = () => { if (current?.audio === audio) stopSpeaking(); };
   await audio.play();
+  return audio;
+}
+
+export async function speakAndWait(api, text, id = "call") {
+  const audio = await speak(api, text, id);
+  await new Promise((resolve) => {
+    const done = () => resolve();
+    audio.addEventListener("ended", done);
+    audio.addEventListener("pause", done);
+  });
 }
 
 export async function recordAudio() {

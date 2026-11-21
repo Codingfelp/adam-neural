@@ -15,6 +15,11 @@ Construir "Adam", IA própria estilo ChatGPT/Claude/Manus, criada por Felipe Hud
 - Frontend React: Chat (SSE streaming, seletor de motor, anexos, cartões de arquivos/imagens/links), Memória, Arquivos, Laboratório Neural, API & Chaves, Configurações.
 - Contexto: últimas 16 mensagens + resumo progressivo automático das antigas (não estoura janela de contexto).
 
+## Implementado (2026-11-21) — iteração 4
+- Modo Ligação: botão "Ligar" no chat; detecção automática de fala/silêncio, transcrição, resposta falada, interrupção falando por cima, mudo.
+- Extensão v1.1: agente roda no service worker (segundo plano, aba fixa da tarefa, até 80 passos), permissão por notificação com botões, notificação ao concluir.
+- Voz brasileira ElevenLabs (eleven_multilingual_v2, vozes PT-BR da biblioteca, escolha em Configurações) com fallback OpenAI TTS. Requer ELEVENLABS_API_KEY.
+
 ## Implementado (2026-11-21) — iteração 3
 - Aprendizado contínuo do AdamNano em segundo plano (loop a cada 5 min) com mensagens do usuário, memórias, docs da base e respostas do Servidor Local. Respostas do Claude NÃO entram (termos da Anthropic). Opção em Configurações.
 - RAG: Base de Conhecimento (/conhecimento) com índice de texto Mongo (português), trechos injetados no prompt e citados ("Consultou").

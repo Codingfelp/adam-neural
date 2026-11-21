@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { FileText, Globe, Image as ImageIcon, Search } from "lucide-react";
+import { FileText, Globe, Image as ImageIcon, Phone, Search } from "lucide-react";
 import { toast } from "sonner";
 import { API, errMsg, useApi } from "@/lib/api";
 import { useAdam } from "@/lib/adamContext";
 import EngineSelect from "@/components/adam/EngineSelect";
 import MessageBubble from "@/components/adam/MessageBubble";
 import Composer from "@/components/adam/Composer";
+import CallMode from "@/components/adam/CallMode";
 import { speak } from "@/lib/voice";
 
 const SUGGESTIONS = [
@@ -59,8 +60,12 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const skipLoad = useRef(null);
   const endRef = useRef(null);
+  const convRef = useRef(id || null);
+  const sendRef = useRef(null);
+  const [calling, setCalling] = useState(false);
 
   useEffect(() => {
+    convRef.current = id || null;
     if (!id) { setMessages([]); setTitle(""); return; }
     if (skipLoad.current === id) return;
     api.get(`/conversations/${id}`).then(({ data }) => { setMessages(data.messages); setTitle(data.conversation.title); })
@@ -81,13 +86,13 @@ export default function ChatPage() {
       const res = await fetch(`${API}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text, conversation_id: id || null, engine, attachment_ids: files.map((f) => f.id) }),
+        body: JSON.stringify({ message: text, conversation_id: convRef.current || null, engine, attachment_ids: files.map((f) => f.id) }),
       });
       if (!res.ok) throw new Error((await res.json()).detail || `Erro ${res.status}`);
       await readSSE(res, (ev) => {
         if (ev.type === "meta") {
           setTitle(ev.title);
-          if (!id) { skipLoad.current = ev.conversation_id; navigate(`/chat/${ev.conversation_id}`, { replace: true }); refresh(); }
+          if (!convRef.current) { convRef.current = ev.conversation_id; skipLoad.current = ev.conversation_id; navigate(`/chat/${ev.conversation_id}`, { replace: true }); refresh(); }
         } else if (ev.type === "delta") { finalText += ev.content; patchLast((m) => ({ ...m, content: m.content + ev.content, tool: null })); }
         else if (ev.type === "tool") patchLast((m) => ({ ...m, tool: ev.label }));
         else if (ev.type === "file") patchLast((m) => ({ ...m, files: [...m.files, ev.file], tool: null }));
@@ -98,22 +103,32 @@ export default function ChatPage() {
         else if (ev.type === "error") toast.error(ev.message);
         else if (ev.type === "done") patchLast((m) => ({ ...m, id: ev.message_id }));
       });
-      if ((byVoice || settings.auto_speak) && finalText.trim()) speak(api, finalText, "last").catch(() => toast.error("Não consegui falar a resposta."));
+      if (byVoice === true || (settings.auto_speak && byVoice !== "call")) {
+        if (finalText.trim()) speak(api, finalText, "last").catch(() => toast.error("Não consegui falar a resposta."));
+      }
+      return finalText;
     } catch (e) {
       toast.error(errMsg(e));
       patchLast((m) => ({ ...m, content: m.content || "⚠️ Não foi possível obter resposta." }));
+      return "";
     } finally {
       setBusy(false);
       refresh();
     }
   };
+  sendRef.current = send;
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {calling && <CallMode onSend={(t) => sendRef.current(t, [], "call")} onClose={() => setCalling(false)} />}
       <header className="h-14 shrink-0 pl-14 md:pl-6 pr-4 border-b border-white/5 bg-[#090A0F]/80 backdrop-blur-xl flex items-center gap-4 z-20">
         <EngineSelect />
         <p className="text-sm text-zinc-400 truncate flex-1" data-testid="chat-title">{title}</p>
         {busy && <span className="text-[11px] font-mono text-[#F4A261] animate-pulse" data-testid="chat-streaming-indicator">gerando…</span>}
+        <button onClick={() => setCalling(true)} data-testid="call-mode-start-button" title="Ligar para o Adam"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-200 text-xs hover:bg-emerald-500/20 transition-colors">
+          <Phone className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Ligar</span>
+        </button>
       </header>
       <div className="flex-1 overflow-y-auto scroll-thin flex flex-col" data-testid="chat-messages">
         {messages.length === 0 ? <Empty onPick={(t) => send(t, [])} /> : (
