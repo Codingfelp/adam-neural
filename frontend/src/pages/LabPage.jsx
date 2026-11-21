@@ -86,7 +86,7 @@ export default function LabPage() {
                 <LineChart data={s.losses}>
                   <CartesianGrid stroke="rgba(255,255,255,0.05)" />
                   <XAxis dataKey="step" stroke="#68687D" fontSize={11} />
-                  <YAxis stroke="#68687D" fontSize={11} domain={["auto", "auto"]} />
+                  <YAxis stroke="#68687D" fontSize={11} scale="log" domain={["auto", "auto"]} allowDataOverflow />
                   <Tooltip contentStyle={{ background: "#181A26", border: "1px solid rgba(255,255,255,.1)", borderRadius: 8, fontSize: 12 }} />
                   <Line type="monotone" dataKey="loss" stroke="#8338EC" strokeWidth={2} dot={false} isAnimationActive={false} />
                 </LineChart>

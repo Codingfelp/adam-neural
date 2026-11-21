@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, Copy, Download, Paperclip } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Globe, Paperclip, Search } from "lucide-react";
 import { ENGINES } from "@/lib/api";
 import { FileCard, GeneratedImage, useBlobUrl } from "@/components/adam/FileCard";
 
@@ -47,6 +47,34 @@ function Attachment({ f }) {
   return <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs"><Paperclip className="w-3 h-3" />{f.name}</span>;
 }
 
+const LINK_KIND = {
+  search: { icon: Search, label: "Pesquisou" },
+  read: { icon: Globe, label: "Leu" },
+  open: { icon: ExternalLink, label: "Abriu no navegador" },
+};
+
+function LinkList({ links }) {
+  return (
+    <div className="flex flex-wrap gap-2 mt-3" data-testid="message-links">
+      {links.map((l, i) => {
+        const k = LINK_KIND[l.kind] || LINK_KIND.read;
+        const Icon = k.icon;
+        let host = l.url;
+        try { host = new URL(l.url).hostname.replace("www.", ""); } catch {}
+        return (
+          <a key={i} href={l.url} target="_blank" rel="noopener noreferrer" data-testid={`message-link-${l.kind}-${i}`}
+            className={`group inline-flex items-center gap-2 max-w-xs px-3 py-1.5 rounded-lg border text-xs transition-colors ${l.kind === "open" ? "border-[#2A9D8F]/40 bg-[#2A9D8F]/10 text-emerald-200 hover:bg-[#2A9D8F]/20" : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/20"}`}>
+            <Icon className="w-3.5 h-3.5 shrink-0" />
+            <span className="text-zinc-500 shrink-0">{k.label}</span>
+            <span className="truncate">{l.kind === "search" ? l.title.replace("Pesquisa: ", "") : host}</span>
+            {l.kind === "open" && <span className="ml-1 font-medium">Abrir</span>}
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function MessageBubble({ m, streaming }) {
   if (m.role === "user") {
     return (
@@ -70,6 +98,7 @@ export default function MessageBubble({ m, streaming }) {
         <div className={`prose-adam ${streaming ? "caret" : ""}`}>
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{m.content || ""}</ReactMarkdown>
         </div>
+        {m.links?.length > 0 && <LinkList links={m.links} />}
         {m.files?.map((f) => (f.kind === "image" ? <GeneratedImage key={f.id} file={f} /> : <FileCard key={f.id} file={f} />))}
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { FileText, Globe, Image as ImageIcon, Table } from "lucide-react";
+import { FileText, Globe, Image as ImageIcon, Search } from "lucide-react";
 import { toast } from "sonner";
 import { API, errMsg, useApi } from "@/lib/api";
 import { useAdam } from "@/lib/adamContext";
@@ -11,7 +11,7 @@ import Composer from "@/components/adam/Composer";
 const SUGGESTIONS = [
   { icon: Globe, text: "Crie um site de portfólio moderno em um único arquivo HTML" },
   { icon: FileText, text: "Gere um PDF com um plano de estudos de redes neurais em 8 semanas" },
-  { icon: Table, text: "Monte uma planilha Excel de controle de gastos mensais" },
+  { icon: Search, text: "Pesquise as últimas notícias sobre inteligência artificial no Brasil" },
   { icon: ImageIcon, text: "Gere uma imagem de Belo Horizonte futurista ao entardecer" },
 ];
 
@@ -89,6 +89,10 @@ export default function ChatPage() {
         } else if (ev.type === "delta") patchLast((m) => ({ ...m, content: m.content + ev.content, tool: null }));
         else if (ev.type === "tool") patchLast((m) => ({ ...m, tool: ev.label }));
         else if (ev.type === "file") patchLast((m) => ({ ...m, files: [...m.files, ev.file], tool: null }));
+        else if (ev.type === "link") {
+          patchLast((m) => ({ ...m, links: [...(m.links || []), ev.link], tool: null }));
+          if (ev.link.kind === "open" && !window.open(ev.link.url, "_blank", "noopener")) toast.info("Seu navegador bloqueou a nova aba. Clique em “Abrir” no cartão.");
+        }
         else if (ev.type === "error") toast.error(ev.message);
         else if (ev.type === "done") patchLast((m) => ({ ...m, id: ev.message_id }));
       });

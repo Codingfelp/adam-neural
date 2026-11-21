@@ -28,12 +28,13 @@ from starlette.middleware.cors import CORSMiddleware
 
 try:
     from backend.clerk_auth import clerk_router, require_user
-    from backend import storage, files_util
+    from backend import storage, files_util, web_tools
     from backend.neural import engine as neural
 except ModuleNotFoundError:
     from clerk_auth import clerk_router, require_user
     import storage
     import files_util
+    import web_tools
     from neural import engine as neural
 
 mongo_url = os.environ["MONGO_URL"]
@@ -133,7 +134,10 @@ Ferramentas disponíveis:
   - xlsx: conteúdo em CSV (primeira linha = cabeçalho).
 - gerar_imagem: quando o usuário pedir para criar/desenhar/gerar uma imagem. Escreva o prompt em inglês, detalhado.
 - salvar_memoria: quando o usuário contar algo importante e duradouro sobre si, preferências ou projetos.
-Depois de usar uma ferramenta, comente brevemente o resultado. Nunca insira imagens ou links de arquivos em Markdown: os arquivos e imagens criados já aparecem automaticamente para o usuário com botão de download. Seja honesto sobre limitações: nesta versão você ainda não controla o computador/navegador do usuário nem pesquisa na web em tempo real."""
+- pesquisar_web: para fatos atuais, notícias, preços, documentação ou qualquer coisa que você não tenha certeza. Cite as fontes com links.
+- abrir_site: para ler o conteúdo de uma página (use após pesquisar ou quando o usuário enviar um link).
+- abrir_no_navegador: quando o usuário pedir para abrir/ir para um site no computador dele; abre uma nova aba no navegador do usuário.
+Depois de usar uma ferramenta, comente brevemente o resultado. Nunca insira imagens ou links de arquivos em Markdown: os arquivos e imagens criados já aparecem automaticamente para o usuário com botão de download. Seja honesto sobre limitações: nesta versão você ainda não clica nem digita dentro do navegador do usuário — você lê sites no servidor e abre abas para ele."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -155,8 +159,22 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "fato": {"type": "string"}, "tag": {"type": "string", "description": "preferencia, projeto, pessoal, tecnologia..."}},
             "required": ["fato"]}}},
+    {"type": "function", "function": {
+        "name": "pesquisar_web",
+        "description": "Pesquisa na internet e retorna títulos, links e trechos.",
+        "parameters": {"type": "object", "properties": {"consulta": {"type": "string"}}, "required": ["consulta"]}}},
+    {"type": "function", "function": {
+        "name": "abrir_site",
+        "description": "Acessa uma URL e retorna título, texto e links da página.",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "abrir_no_navegador",
+        "description": "Abre uma URL em nova aba no navegador do usuário.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string"}, "titulo": {"type": "string"}}, "required": ["url"]}}},
 ]
-TOOL_LABELS = {"criar_arquivo": "Criando arquivo", "gerar_imagem": "Gerando imagem", "salvar_memoria": "Salvando na memória"}
+TOOL_LABELS = {"criar_arquivo": "Criando arquivo", "gerar_imagem": "Gerando imagem", "salvar_memoria": "Salvando na memória",
+               "pesquisar_web": "Pesquisando na web", "abrir_site": "Lendo site", "abrir_no_navegador": "Abrindo no seu navegador"}
 
 
 async def build_system(user_id: str) -> str:
@@ -202,14 +220,27 @@ async def dispatch_tool(user_id: str, name: str, args: dict):
         fname = (args.get("nome_arquivo") or "arquivo.txt").strip().replace("/", "_")
         data, mime = await asyncio.to_thread(files_util.build_file, fname, args.get("conteudo", ""))
         f = await save_file(user_id, fname, data, mime, "generated")
-        return {"ok": True, "arquivo": fname, "tamanho_bytes": len(data)}, f
+        return {"ok": True, "arquivo": fname, "tamanho_bytes": len(data)}, {"type": "file", "file": f}
     if name == "gerar_imagem":
         f = await generate_image(user_id, args.get("prompt", ""))
-        return {"ok": True, "imagem": f["name"]}, f
+        return {"ok": True, "imagem": f["name"]}, {"type": "file", "file": f}
     if name == "salvar_memoria":
         await db.memories.insert_one({"id": str(uuid.uuid4()), "user_id": user_id, "fact": args.get("fato", "")[:1000],
                                       "tag": args.get("tag") or "geral", "source": "adam", "created_at": now()})
         return {"ok": True}, None
+    if name == "pesquisar_web":
+        q = args.get("consulta", "")
+        res = await web_tools.web_search(q)
+        link = {"url": web_tools.search_link(q), "title": f"Pesquisa: {q}", "kind": "search"}
+        return {"resultados": res or "Nenhum resultado"}, {"type": "link", "link": link}
+    if name == "abrir_site":
+        page = await web_tools.open_site(args.get("url", ""))
+        return page, {"type": "link", "link": {"url": page["url"], "title": page.get("titulo") or page["url"], "kind": "read"}}
+    if name == "abrir_no_navegador":
+        url = args.get("url", "")
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        return {"ok": True, "aberto": url}, {"type": "link", "link": {"url": url, "title": args.get("titulo") or url, "kind": "open"}}
     return {"ok": False, "erro": "ferramenta desconhecida"}, None
 
 
@@ -235,9 +266,9 @@ async def run_pro(user_id, system, history, text, images):
         for tc in pending:
             args = tc.arguments if isinstance(tc.arguments, dict) else json.loads(tc.arguments or "{}")
             try:
-                result, f = await dispatch_tool(user_id, tc.name, args)
-                if f:
-                    yield {"type": "file", "file": f}
+                result, ev = await dispatch_tool(user_id, tc.name, args)
+                if ev:
+                    yield ev
             except Exception as e:
                 logger.exception("tool %s failed", tc.name)
                 result = {"ok": False, "erro": str(e)[:300]}
@@ -278,6 +309,29 @@ async def run_local(user_id, system, history, text):
         yield {"type": "delta", "content": f"Não consegui conectar ao servidor local `{url}`: {str(e)[:200]}"}
 
 
+KEEP_RECENT = 16
+SUMMARY_BATCH = 10
+
+
+async def compact_history(conv: dict, past: list) -> str:
+    """Rolling summary: older messages are folded into conv.summary so context never overflows."""
+    summary, upto = conv.get("summary", ""), conv.get("summary_upto", 0)
+    older = past[:-KEEP_RECENT] if len(past) > KEEP_RECENT else []
+    pending = older[upto:]
+    if len(pending) < SUMMARY_BATCH:
+        return summary
+    transcript = "\n".join(f"{m['role']}: {(m.get('model_text') or m['content'])[:3000]}" for m in pending)
+    prompt = (f"Resumo atual:\n{summary or '(vazio)'}\n\nNovas mensagens:\n{transcript}\n\n"
+              "Atualize o resumo em português, em no máximo 400 palavras, preservando fatos, decisões, nomes, código importante e pedidos pendentes.")
+    try:
+        chat = LlmChat(api_key=LLM_KEY, session_id=str(uuid.uuid4()), system_message="Você resume conversas com precisão.").with_model(*PRO_MODEL)
+        summary = (await chat.send_message(UserMessage(text=prompt))).strip()
+        await db.conversations.update_one({"id": conv["id"]}, {"$set": {"summary": summary, "summary_upto": len(older)}})
+    except Exception as e:
+        logger.error("compact_history failed: %s", e)
+    return summary
+
+
 async def chat_turn(user_id: str, body: ChatIn):
     conv = None
     if body.conversation_id:
@@ -292,8 +346,14 @@ async def chat_turn(user_id: str, body: ChatIn):
     cid = conv["id"]
     yield {"type": "meta", "conversation_id": cid, "title": conv["title"]}
 
-    past = await db.messages.find({"conversation_id": cid}, {"_id": 0}).sort("created_at", 1).to_list(400)
-    history = [{"role": m["role"], "content": m.get("model_text") or m["content"]} for m in past[-30:] if (m.get("model_text") or m["content"]).strip()]
+    past = await db.messages.find({"conversation_id": cid}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    summary = await compact_history(conv, past)
+    recent = past[-KEEP_RECENT:]
+    history = []
+    for i, m in enumerate(recent):
+        txt = (m.get("model_text") or m["content"]).strip()
+        if txt:
+            history.append({"role": m["role"], "content": txt if i >= len(recent) - 4 else txt[:6000]})
 
     attachments, images, doc_texts = [], [], []
     if body.attachment_ids:
@@ -313,7 +373,9 @@ async def chat_turn(user_id: str, body: ChatIn):
                                   "content": body.message, "model_text": model_text, "attachments": attachments,
                                   "files": [], "engine": body.engine, "created_at": now()})
     system = await build_system(user_id)
-    parts, files = [], []
+    if summary:
+        system += f"\n\nResumo da parte anterior desta conversa (mensagens antigas compactadas):\n{summary}"
+    parts, files, links = [], [], []
     try:
         if body.engine == "neural":
             gen = run_neural(history, body.message)
@@ -326,6 +388,8 @@ async def chat_turn(user_id: str, body: ChatIn):
                 parts.append(ev["content"])
             elif ev["type"] == "file":
                 files.append(ev["file"])
+            elif ev["type"] == "link":
+                links.append(ev["link"])
             yield ev
     except Exception as e:
         logger.exception("chat failed")
@@ -334,7 +398,7 @@ async def chat_turn(user_id: str, body: ChatIn):
         yield {"type": "delta", "content": msg}
     mid = str(uuid.uuid4())
     await db.messages.insert_one({"id": mid, "conversation_id": cid, "user_id": user_id, "role": "assistant",
-                                  "content": "".join(parts).strip(), "attachments": [], "files": files,
+                                  "content": "".join(parts).strip(), "attachments": [], "files": files, "links": links,
                                   "engine": body.engine, "created_at": now()})
     await db.conversations.update_one({"id": cid}, {"$set": {"updated_at": now(), "engine": body.engine}})
     yield {"type": "done", "message_id": mid, "conversation_id": cid}
@@ -499,18 +563,21 @@ async def require_api_key(request: Request) -> dict:
 @api.post("/v1/chat")
 async def v1_chat(body: V1ChatIn, key: dict = Depends(require_api_key)):
     parts, files, cid, err = [], [], None, None
+    links = []
     async for ev in chat_turn(key["user_id"], ChatIn(message=body.message, conversation_id=body.conversation_id, engine=body.engine)):
         if ev["type"] == "delta":
             parts.append(ev["content"])
         elif ev["type"] == "file":
             files.append(ev["file"])
+        elif ev["type"] == "link":
+            links.append(ev["link"])
         elif ev["type"] in ("meta", "done"):
             cid = ev["conversation_id"]
         elif ev["type"] == "error":
             err = ev["message"]
     if err:
         raise HTTPException(404, err)
-    return {"conversation_id": cid, "engine": body.engine, "reply": "".join(parts).strip(), "files": files}
+    return {"conversation_id": cid, "engine": body.engine, "reply": "".join(parts).strip(), "files": files, "links": links}
 
 
 @api.get("/v1/files/{fid}")
